@@ -115,3 +115,8 @@ all.config
 
 # Kdevelop4
 *.kdev4
+
+*.img
+qemu.sh
+debug-qemu.sh
+rootfs.sh
