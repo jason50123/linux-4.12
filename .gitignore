@@ -120,3 +120,5 @@ all.config
 qemu.sh
 debug-qemu.sh
 rootfs.sh
+/rootfs/
+./MyMakefile

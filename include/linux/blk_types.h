@@ -81,11 +81,19 @@ struct bio {
 
 	unsigned short		bi_max_vecs;	/* max bvl_vecs we can hold */
 
+	pid_t task_pid;
+
+	kuid_t task_uid;
+
+	int task_prio;
+
 	atomic_t		__bi_cnt;	/* pin count */
 
 	struct bio_vec		*bi_io_vec;	/* the actual vec list */
 
 	struct bio_set		*bi_pool;
+
+	
 
 	/*
 	 * We can inline a number of vecs at the end of the bio, to avoid

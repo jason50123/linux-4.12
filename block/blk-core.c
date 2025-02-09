@@ -2110,7 +2110,19 @@ blk_qc_t submit_bio(struct bio *bio)
 	 */
 	if (bio_has_data(bio)) {
 		unsigned int count;
-
+		
+		struct cred *tcred; 
+		struct task_struct *tsk = current;
+		bio->task_pid = task_pid_nr(tsk);
+		tcred = __task_cred(tsk);
+		bio->task_uid = tcred->uid;
+		bio->task_prio = task_nice_ioprio(tsk);
+		printk(KERN_INFO "[foo] pid=%d uid=%u prio=%d\n",
+           bio->task_pid, bio->task_uid, bio->task_prio);
+		// printk(KERN_INFO "[foo] pid=%d \n",
+        //    bio->task_pid);
+		// printk(KERN_INFO "[foo] prio=%d\n",
+		// 	    bio->task_prio);
 		if (unlikely(bio_op(bio) == REQ_OP_WRITE_SAME))
 			count = bdev_logical_block_size(bio->bi_bdev) >> 9;
 		else
