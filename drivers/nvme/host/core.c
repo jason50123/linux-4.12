@@ -374,13 +374,10 @@ static inline void nvme_setup_rw(struct nvme_ns *ns, struct request *req,
 	cmnd->rw.dsmgmt = cpu_to_le32(dsmgmt);
 	
 	if (req->bio) {
-		/* 將uid轉成整數 (此處只存下 32 bits) */
-		u32 uid32  = (u32)from_kuid(&init_user_ns, req->bio->bi_uid);
-		/* prio 直接用 int => u32 取值即可 */
+		u32 uid32  = (u32)from_kuid(&init_user_ns, req->rq_uid);
 		u32 prio32 = (u32)(req->bio->bi_prio);
 		u64 combined = ((u64)uid32 << 32) | prio32;
 		cmnd->rw.rsvd2 = cpu_to_le64(combined);
-
 	}
 }
 

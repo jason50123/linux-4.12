@@ -603,11 +603,6 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
 
-	/* Adding scheduing information while spliting bio*/
-	bio->bi_uid = bio_src->bi_uid;
-	bio->bi_pid = bio_src->bi_pid;
-	bio->bi_ioprio = bio_src->bi_ioprio;
-
 	bio_clone_blkcg_association(bio, bio_src);
 
 }

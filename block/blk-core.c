@@ -1586,6 +1586,12 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 
 		if (rq->q != q || !blk_rq_merge_ok(rq, bio))
 			continue;
+		pr_info("PLUG-MERGE rq_uid=%u bio_uid=%u match=%s\n",
+			__kuid_val(rq->rq_uid), __kuid_val(bio->bi_uid),
+			uid_eq(rq->rq_uid, bio->bi_uid) ? "YES" : "NO");
+				 
+		if (!uid_eq(rq->rq_uid, bio->bi_uid))
+            continue;
 
 		switch (blk_try_merge(rq, bio)) {
 		case ELEVATOR_BACK_MERGE:
@@ -1601,8 +1607,13 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 			break;
 		}
 
-		if (merged)
+		if (merged){
+			pr_debug("PLUG-MERGED rq_uid=%u, add_sz=%u\n",
+			         __kuid_val(rq->rq_uid),
+			         bio->bi_iter.bi_size);
 			return true;
+		}
+			
 	}
 
 	return false;

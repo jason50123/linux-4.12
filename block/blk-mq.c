@@ -1418,8 +1418,15 @@ void blk_mq_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 static void blk_mq_bio_to_request(struct request *rq, struct bio *bio)
 {
 	blk_init_request_from_bio(rq, bio);
+		
+	rq->rq_uid = bio->bi_uid;
 	
 	rq->rq_uid = bio->bi_uid;
+	
+	/* Add tracepoint for UID assignment in blk-mq */
+	printk(KERN_DEBUG "BLK-MQ: rq_uid assigned=%u from bio_uid=%u\n",
+	       from_kuid_munged(&init_user_ns, rq->rq_uid),
+	       from_kuid_munged(&init_user_ns, bio->bi_uid));
 	
 	blk_account_io_start(rq, true);
 }

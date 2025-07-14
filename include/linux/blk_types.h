@@ -9,6 +9,8 @@
 #include <linux/bvec.h>
 #include <linux/cred.h> 
 #include <linux/sched.h>  
+#include <linux/cred.h> 
+#include <linux/sched.h>  
 
 struct bio_set;
 struct bio;
@@ -84,9 +86,12 @@ struct bio {
 	unsigned short		bi_max_vecs;	/* max bvl_vecs we can hold */
 
 	pid_t bi_pid;
+	pid_t bi_pid;
 
 	kuid_t bi_uid;
+	kuid_t bi_uid;
 
+	u8		bi_prio;
 	u8		bi_prio;
 
 	atomic_t		__bi_cnt;	/* pin count */
@@ -321,11 +326,15 @@ static inline void bio_mark_owner(struct bio *bio)
 	bio->bi_prio = (u8)task_prio(current);
 }
 
-static inline void bio_copy_owner(struct bio *dst, const struct bio *src)
+/* Record current task as the owner of @bio                        */
+static inline void bio_mark_owner(struct bio *bio)
 {
-	dst->bi_uid = src->bi_uid;
-	dst->bi_pid = src->bi_pid;
+	bio->bi_uid = current_uid();          /* type: kuid_t  */
+	bio->bi_pid = task_tgid_nr(current);  /* type: pid_t   */
+	bio->bi_prio = (u8)task_prio(current);
 }
+
+
 struct blk_rq_stat {
 	s64 mean;
 	u64 min;
