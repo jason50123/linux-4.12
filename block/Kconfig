@@ -206,4 +206,11 @@ config BLK_MQ_VIRTIO
 	depends on BLOCK && VIRTIO
 	default y
 
+config IOSCHED_ZQOS
+	tristate "zQoS I/O scheduler"
+	depends on BLOCK
+	help
+		Implements latency-aware credit-based scheduling for NVMe SSDs.
+	default y
+
 source block/Kconfig.iosched

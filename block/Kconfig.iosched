@@ -99,6 +99,16 @@ config BFQ_GROUP_IOSCHED
        Enable hierarchical scheduling in BFQ, using the blkio
        (cgroups-v1) or io (cgroups-v2) controller.
 
+config IOSCHED_ZQOS
+	tristate "zQoS I/O scheduler"
+	default n
+	---help---
+	  The zQoS I/O scheduler implements the zQoS (zone Quality of Service)
+	  algorithm for NVMe SSDs. It provides performance isolation and QoS
+	  guarantees for multi-tenant environments. This scheduler is designed
+	  for research purposes and implements the algorithms described in the
+	  zQoS paper.
+
 endmenu
 
 endif
