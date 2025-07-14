@@ -714,6 +714,12 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	ret = nvme_setup_cmd(ns, req, &cmnd);
 	if (ret != BLK_MQ_RQ_QUEUE_OK)
 		return ret;
+	
+	if (req->bio) {
+    	pr_info("NVMe rq uid=%u prio=%d\n",
+        from_kuid(&init_user_ns, req->rq_uid),
+        req->bio ? req->bio->bi_prio : -1);
+	}
 
 	ret = nvme_init_iod(req, dev);
 	if (ret != BLK_MQ_RQ_QUEUE_OK)

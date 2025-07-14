@@ -133,6 +133,8 @@ typedef __u32 __bitwise req_flags_t;
  */
 struct request {
 	struct list_head queuelist;
+	/* To save first bio uid -> means all of bio in this reqeust is from same user */	
+	kuid_t              rq_uid;
 	union {
 		struct call_single_data csd;
 		u64 fifo_time;

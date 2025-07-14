@@ -1586,6 +1586,12 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 
 		if (rq->q != q || !blk_rq_merge_ok(rq, bio))
 			continue;
+		pr_info("PLUG-MERGE rq_uid=%u bio_uid=%u match=%s\n",
+			__kuid_val(rq->rq_uid), __kuid_val(bio->bi_uid),
+			uid_eq(rq->rq_uid, bio->bi_uid) ? "YES" : "NO");
+				 
+		if (!uid_eq(rq->rq_uid, bio->bi_uid))
+            continue;
 
 		switch (blk_try_merge(rq, bio)) {
 		case ELEVATOR_BACK_MERGE:
@@ -1601,8 +1607,13 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 			break;
 		}
 
-		if (merged)
+		if (merged){
+			pr_debug("PLUG-MERGED rq_uid=%u, add_sz=%u\n",
+			         __kuid_val(rq->rq_uid),
+			         bio->bi_iter.bi_size);
 			return true;
+		}
+			
 	}
 
 	return false;
@@ -2111,18 +2122,6 @@ blk_qc_t submit_bio(struct bio *bio)
 	if (bio_has_data(bio)) {
 		unsigned int count;
 		
-		struct cred *tcred; 
-		struct task_struct *tsk = current;
-		bio->task_pid = task_pid_nr(tsk);
-		tcred = __task_cred(tsk);
-		bio->task_uid = tcred->uid;
-		bio->task_prio = task_nice_ioprio(tsk);
-		printk(KERN_INFO "[foo] pid=%d uid=%u prio=%d\n",
-           bio->task_pid, bio->task_uid, bio->task_prio);
-		// printk(KERN_INFO "[foo] pid=%d \n",
-        //    bio->task_pid);
-		// printk(KERN_INFO "[foo] prio=%d\n",
-		// 	    bio->task_prio);
 		if (unlikely(bio_op(bio) == REQ_OP_WRITE_SAME))
 			count = bdev_logical_block_size(bio->bi_bdev) >> 9;
 		else

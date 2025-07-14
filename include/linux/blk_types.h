@@ -7,6 +7,8 @@
 
 #include <linux/types.h>
 #include <linux/bvec.h>
+#include <linux/cred.h> 
+#include <linux/sched.h>  
 
 struct bio_set;
 struct bio;
@@ -81,11 +83,11 @@ struct bio {
 
 	unsigned short		bi_max_vecs;	/* max bvl_vecs we can hold */
 
-	pid_t task_pid;
+	pid_t bi_pid;
 
-	kuid_t task_uid;
+	kuid_t bi_uid;
 
-	int task_prio;
+	u8		bi_prio;
 
 	atomic_t		__bi_cnt;	/* pin count */
 
@@ -309,6 +311,14 @@ static inline unsigned int blk_qc_t_to_tag(blk_qc_t cookie)
 static inline bool blk_qc_t_is_internal(blk_qc_t cookie)
 {
 	return (cookie & BLK_QC_T_INTERNAL) != 0;
+}
+
+/* Record current task as the owner of @bio                        */
+static inline void bio_mark_owner(struct bio *bio)
+{
+	bio->bi_uid = current_uid();          /* type: kuid_t  */
+	bio->bi_pid = task_tgid_nr(current);  /* type: pid_t   */
+	bio->bi_prio = (u8)task_prio(current);
 }
 
 struct blk_rq_stat {

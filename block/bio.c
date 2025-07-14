@@ -499,6 +499,7 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, unsigned int nr_iovecs,
 
 	bio = p + front_pad;
 	bio_init(bio, NULL, 0);
+	bio_mark_owner(bio);
 
 	if (nr_iovecs > inline_vecs) {
 		unsigned long idx = 0;
@@ -602,7 +603,13 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
 
+	/* Adding scheduing information while spliting bio*/
+	bio->bi_uid = bio_src->bi_uid;
+	bio->bi_pid = bio_src->bi_pid;
+	bio->bi_prio = bio_src->bi_prio;
+
 	bio_clone_blkcg_association(bio, bio_src);
+
 }
 EXPORT_SYMBOL(__bio_clone_fast);
 
