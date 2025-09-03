@@ -1572,6 +1572,8 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 
 	list_for_each_entry_reverse(rq, plug_list, queuelist) {
 		bool merged = false;
+		bool uid_print;
+		bool merge_ok;
 
 		if (rq->q == q) {
 			(*request_count)++;
@@ -1586,12 +1588,18 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 
 		if (rq->q != q || !blk_rq_merge_ok(rq, bio))
 			continue;
-		pr_info("PLUG-MERGE rq_uid=%u bio_uid=%u match=%s\n",
-			__kuid_val(rq->rq_uid), __kuid_val(bio->bi_uid),
-			uid_eq(rq->rq_uid, bio->bi_uid) ? "YES" : "NO");
-				 
-		if (!uid_eq(rq->rq_uid, bio->bi_uid))
-            continue;
+
+		merge_ok = blk_rq_merge_ok(rq, bio);
+		uid_print = uid_eq(rq->rq_uid, bio->bi_uid);
+
+		if (!uid_eq(rq->rq_uid, bio->bi_uid)){
+			pr_debug("blkcore: rq=%p rq_uid=%llu bio=%p bio_uid=%llu uid_eq=%d merge_ok=%d\n",
+				rq, (unsigned long long)rq->rq_uid.val,
+				bio, (unsigned long long)bio->bi_uid.val,
+				uid_print, merge_ok);
+			continue;
+		}
+            
 
 		switch (blk_try_merge(rq, bio)) {
 		case ELEVATOR_BACK_MERGE:

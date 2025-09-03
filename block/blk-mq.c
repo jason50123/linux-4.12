@@ -770,8 +770,7 @@ static bool blk_mq_attempt_merge(struct request_queue *q,
 		if (!checked--)
 			break;
 
-		if (rq->rq_uid.val != bio->bi_uid.val ||
-+           !blk_rq_merge_ok(rq, bio))
+		if (rq->rq_uid.val != bio->bi_uid.val|| !blk_rq_merge_ok(rq, bio))
 			continue;
 
 		switch (blk_try_merge(rq, bio)) {
@@ -1421,11 +1420,6 @@ static void blk_mq_bio_to_request(struct request *rq, struct bio *bio)
 	
 	rq->rq_uid = bio->bi_uid;
 	
-	/* Add tracepoint for UID assignment in blk-mq */
-	printk(KERN_DEBUG "BLK-MQ: rq_uid assigned=%u from bio_uid=%u\n",
-	       from_kuid_munged(&init_user_ns, rq->rq_uid),
-	       from_kuid_munged(&init_user_ns, bio->bi_uid));
-	
 	blk_account_io_start(rq, true);
 }
 
@@ -1546,6 +1540,39 @@ static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
 	struct request *same_queue_rq = NULL;
 	blk_qc_t cookie;
 	unsigned int wb_acct;
+	
+	/* Debug: 基本 I/O 與 queue 狀態 */
+	pr_info("blk-mq: make_request q=%p bio=%p opf=0x%x is_sync=%d is_flush_fua=%d sector=%llu size=%u nr_hwq=%u\n",
+		q, bio, bio->bi_opf, is_sync, is_flush_fua,
+		(unsigned long long)bio->bi_iter.bi_sector,
+		bio->bi_iter.bi_size, q->nr_hw_queues);
+
+	/*
+	 * 路線 A：依 UID 選擇 hctx（硬體 I/O queue）。
+	 * 若有多條硬體佇列，將本次 bio 對應的 UID 做穩定映射到 hctx index。
+	 * 注意：若該 hctx 未映射或出錯，交回預設路徑讓核心自行決定。
+	 */
+	if (q->nr_hw_queues > 1) {
+		unsigned int nr = q->nr_hw_queues;
+		u32 uid32 = from_kuid(&init_user_ns, bio->bi_uid);
+		unsigned int hidx = uid32 % nr;
+		struct blk_mq_hw_ctx *sel = q->queue_hw_ctx[hidx];
+
+		pr_info("blk-mq: UID-hctx select uid=%u nr=%u hidx=%u sel=%p\n",
+			uid32, nr, hidx, sel);
+		if (sel && blk_mq_hw_queue_mapped(sel)) {
+			unsigned int cpu = cpumask_first(sel->cpumask);
+			pr_info("blk-mq: use hctx sel=%p qnum=%u first_cpu=%u\n",
+				sel, sel->queue_num, cpu);
+			data.hctx = sel;
+			data.ctx  = __blk_mq_get_ctx(q, cpu);
+		} else {
+			pr_info("blk-mq: hctx select fallback (sel=%p mapped=%d)\n",
+				sel, sel ? blk_mq_hw_queue_mapped(sel) : 0);
+		}
+	} else {
+		pr_info("blk-mq: single hw queue, skip UID routing\n");
+	}
 
 	blk_queue_bounce(q, &bio);
 
@@ -1567,8 +1594,15 @@ static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
 
 	trace_block_getrq(q, bio, bio->bi_opf);
 
+	/* Debug：送入 scheduler 取 request 前的選擇狀態 */
+	pr_info("blk-mq: before get_request data.hctx=%p data.ctx=%p opf=0x%x\n",
+		data.hctx, data.ctx, bio->bi_opf);
+
+	/* 若上面已指定 data.hctx / data.ctx，這裡會直接用；否則由核心自行決定。 */
 	rq = blk_mq_sched_get_request(q, bio, bio->bi_opf, &data);
 	if (unlikely(!rq)) {
+		pr_info("blk-mq: get_request FAILED q=%p bio=%p opf=0x%x\n",
+			q, bio, bio->bi_opf);
 		__wbt_done(q->rq_wb, wb_acct);
 		return BLK_QC_T_NONE;
 	}
