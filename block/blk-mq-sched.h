@@ -73,6 +73,10 @@ blk_mq_sched_allow_merge(struct request_queue *q, struct request *rq,
 {
 	struct elevator_queue *e = q->elevator;
 
+	/* 首先檢查 UID 是否相同 */
+	if (!uid_eq(rq->rq_uid, bio->bi_uid))
+		return false;
+
 	if (e && e->type->ops.mq.allow_merge)
 		return e->type->ops.mq.allow_merge(q, rq, bio);
 

@@ -791,6 +791,10 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 	if (!rq_mergeable(rq) || !bio_mergeable(bio))
 		return false;
 
+	/* 檢查 UID 是否相同 */
+	if (!uid_eq(rq->rq_uid, bio->bi_uid))
+		return false;
+
 	if (req_op(rq) != bio_op(bio))
 		return false;
 
