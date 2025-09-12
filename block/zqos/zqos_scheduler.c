@@ -191,8 +191,8 @@ static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
                 tenant->tokens -= tokens_needed;
                 list_del_init(&req->queuelist);
                 /* Add scheduling trace */
-                printk(KERN_DEBUG "ZQoS: LC_DISPATCH tenant_id=%d tokens_used=%u remaining=%u\n",
-                       tenant->tenant_id, tokens_needed, tenant->tokens);
+                /* printk(KERN_DEBUG "ZQoS: LC_DISPATCH tenant_id=%d tokens_used=%u remaining=%u\n",
+                       tenant->tenant_id, tokens_needed, tenant->tokens); */
                 /* Submit request to actual device */
                 blk_execute_rq_nowait(req->q, NULL, req, 1, NULL);
             } else if (tenant->preemptive && 
@@ -202,8 +202,8 @@ static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
                 tenant->backup_tokens -= tokens_from_backup;
                 tenant->tokens = 0;
                 list_del_init(&req->queuelist);
-                printk(KERN_DEBUG "ZQoS: LC_PREEMPT tenant_id=%d backup_used=%u\n",
-                       tenant->tenant_id, tokens_from_backup);
+                /* printk(KERN_DEBUG "ZQoS: LC_PREEMPT tenant_id=%d backup_used=%u\n",
+                       tenant->tenant_id, tokens_from_backup); */
                 blk_execute_rq_nowait(req->q, NULL, req, 1, NULL);
             } else {
                 break; /* Insufficient tokens */
@@ -244,8 +244,8 @@ static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
                 }
                 
                 /* Add BE scheduling trace */
-                printk(KERN_DEBUG "ZQoS: BE_DISPATCH tenant_id=%d tokens_used=%u remaining=%u\n",
-                       tenant->tenant_id, tokens_needed, tenant->tokens);
+                /* printk(KERN_DEBUG "ZQoS: BE_DISPATCH tenant_id=%d tokens_used=%u remaining=%u\n",
+                       tenant->tenant_id, tokens_needed, tenant->tokens); */
                 
                 blk_execute_rq_nowait(req->q, NULL, req, 1, NULL);
             } else {

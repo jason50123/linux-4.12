@@ -670,7 +670,15 @@ static void blk_account_io_merge(struct request *req)
  */
 static struct request *attempt_merge(struct request_queue *q,
 				     struct request *req, struct request *next)
-{
+{	
+    /* 禁止不同 UID 的 request 彼此合併 */
+    if (!uid_eq(req->rq_uid, next->rq_uid)) {
+        pr_debug("blk-merge: deny rq-rq merge req=%p uid=%u next=%p uid=%u\n",
+                 req, __kuid_val(req->rq_uid),
+                 next, __kuid_val(next->rq_uid));
+        return NULL;
+    }
+
 	if (!rq_mergeable(req) || !rq_mergeable(next))
 		return NULL;
 
@@ -776,6 +784,9 @@ int blk_attempt_req_merge(struct request_queue *q, struct request *rq,
 	if (!e->uses_mq && e->type->ops.sq.elevator_allow_rq_merge_fn)
 		if (!e->type->ops.sq.elevator_allow_rq_merge_fn(q, rq, next))
 			return 0;
+
+    if (!uid_eq(rq->rq_uid, next->rq_uid))
+        return false;
 
 	free = attempt_merge(q, rq, next);
 	if (free) {

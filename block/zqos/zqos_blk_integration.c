@@ -129,11 +129,13 @@ static void zqos_add_request(struct request_queue *q, struct request *rq)
     tenant = zqos_find_tenant_by_request(enforcer, rq);
     
     /* Add tracepoint for UID tracking */
+    /*
     if (rq) {
         printk(KERN_DEBUG "ZQoS: TRACE rq_uid=%u bio_uid=%u\n",
                from_kuid_munged(&init_user_ns, rq->rq_uid),
                rq->bio ? from_kuid_munged(&init_user_ns, rq->bio->bi_uid) : 0);
     }
+    */
     if (!tenant) {
         /* If no tenant found, create default tenant or use first one */
         spin_lock(&enforcer->tenants_lock);
@@ -145,8 +147,8 @@ static void zqos_add_request(struct request_queue *q, struct request *rq)
     
     if (tenant && rq_data) {
         rq_data->tenant = tenant;
-        printk(KERN_INFO "ZQoS: Assign request to tenant %d, type=%s\n", 
-               tenant->tenant_id, tenant->type == TENANT_TYPE_LC ? "LC" : "BE");
+        /* printk(KERN_INFO "ZQoS: Assign request to tenant %d, type=%s\n", 
+               tenant->tenant_id, tenant->type == TENANT_TYPE_LC ? "LC" : "BE"); */
         if (rq->bio)
             rq_data->io_size = bio_sectors(rq->bio) * 512;
         
@@ -198,8 +200,8 @@ static void zqos_completed_request(struct request_queue *q, struct request *rq)
             tenant->tail_latency_metric = ktime_to_us(latency);
             
             /* Add detailed accounting trace */
-            printk(KERN_DEBUG "ZQoS: COMPLETE rq_uid=%u tenant_id=%d latency=%lld us\n",
-                   rq_uid, tenant->tenant_id, ktime_to_us(latency));
+            /* printk(KERN_DEBUG "ZQoS: COMPLETE rq_uid=%u tenant_id=%d latency=%lld us\n",
+                   rq_uid, tenant->tenant_id, ktime_to_us(latency)); */
         }
         
         /* Update device statistics */
@@ -233,9 +235,9 @@ static void zqos_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *r
     struct zqos_tenant *tenant;
     struct zqos_request_data *rq_data;
     
-    printk(KERN_DEBUG "ZQoS: Insert requests, enforcer=%p\n", enforcer);
+    /* printk(KERN_DEBUG "ZQoS: Insert requests, enforcer=%p\n", enforcer);
     printk(KERN_DEBUG "ZQoS: Check if tenant list is empty during insert: %s\n", 
-           list_empty(&enforcer->tenants) ? "Yes" : "No");
+           list_empty(&enforcer->tenants) ? "Yes" : "No"); */
     
     if (!enforcer) {
         printk(KERN_WARNING "ZQoS: enforcer is NULL!\n");
@@ -256,12 +258,14 @@ static void zqos_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *r
         tenant = zqos_find_tenant_by_request(enforcer, rq);
         
         /* Add detailed UID tracking messages */
+        /*
         if (rq) {
             printk(KERN_INFO "ZQoS: INSERT_REQ rq_uid=%u bio_uid=%u tenant_id=%d\n",
                    from_kuid_munged(&init_user_ns, rq->rq_uid),
                    rq->bio ? from_kuid_munged(&init_user_ns, rq->bio->bi_uid) : 0,
                    tenant ? tenant->tenant_id : -1);
         }
+        */
         if (!tenant) {
             /* Use first tenant as default */
             spin_lock(&enforcer->tenants_lock);
@@ -305,9 +309,9 @@ static struct request *zqos_dispatch_request(struct blk_mq_hw_ctx *hctx)
     if (!enforcer)
         return NULL;
     
-    printk(KERN_DEBUG "ZQoS: Attempt to dispatch request, enforcer=%p\n", enforcer);
+    /* printk(KERN_DEBUG "ZQoS: Attempt to dispatch request, enforcer=%p\n", enforcer);
     printk(KERN_DEBUG "ZQoS: Check if tenant list is empty during dispatch: %s\n", 
-           list_empty(&enforcer->tenants) ? "Yes" : "No");
+           list_empty(&enforcer->tenants) ? "Yes" : "No"); */
     /* Simplified implementation: get from first tenant with requests */
     spin_lock(&enforcer->tenants_lock);
     list_for_each_entry(tenant, &enforcer->tenants, list) {
@@ -315,7 +319,7 @@ static struct request *zqos_dispatch_request(struct blk_mq_hw_ctx *hctx)
         if (!list_empty(&tenant->request_queue)) {
             rq = list_first_entry(&tenant->request_queue, struct request, queuelist);
             list_del_init(&rq->queuelist);
-            printk(KERN_INFO "ZQoS: Dispatch request to tenant %d\n", tenant->tenant_id);
+            /* printk(KERN_INFO "ZQoS: Dispatch request to tenant %d\n", tenant->tenant_id); */
         }
         spin_unlock(&tenant->queue_lock);
         if (rq)
@@ -323,9 +327,11 @@ static struct request *zqos_dispatch_request(struct blk_mq_hw_ctx *hctx)
     }
     spin_unlock(&enforcer->tenants_lock);
     
+    /*
     if (!rq) {
         printk(KERN_DEBUG "ZQoS: No dispatchable requests\n");
     }
+    */
     
     return rq;
 }
@@ -420,7 +426,7 @@ static int zqos_init_sched(struct request_queue *q, struct elevator_type *e)
             list_add(&default_tenant->list, &enforcer->tenants);
             spin_unlock(&enforcer->tenants_lock);
             
-            printk(KERN_INFO "ZQoS: init_sched created default tenant %d (LC)\n", default_tenant->tenant_id);
+            /* printk(KERN_INFO "ZQoS: init_sched created default tenant %d (LC)\n", default_tenant->tenant_id); */
         } else {
             printk(KERN_ERR "ZQoS: init_sched failed to allocate default tenant memory\n");
         }
@@ -517,9 +523,9 @@ int zqos_register_device(struct request_queue *q,
             list_add(&default_tenant->list, &enforcer->tenants);
             spin_unlock(&enforcer->tenants_lock);
             
-            printk(KERN_INFO "ZQoS: Created default tenant %d (LC)\n", default_tenant->tenant_id);
+            /* printk(KERN_INFO "ZQoS: Created default tenant %d (LC)\n", default_tenant->tenant_id);
             printk(KERN_INFO "ZQoS: enforcer tenants list not empty: %s\n", 
-                   list_empty(&enforcer->tenants) ? "No" : "Yes");
+                   list_empty(&enforcer->tenants) ? "No" : "Yes"); */
         } else {
             printk(KERN_ERR "ZQoS: Failed to allocate default tenant memory\n");
         }
@@ -593,8 +599,8 @@ static struct zqos_tenant *zqos_find_tenant_by_request(struct zqos_enforcer *enf
     list_for_each_entry(tenant, &enforcer->tenants, list) {
         if (tenant->user_id == uid) {
             spin_unlock(&enforcer->tenants_lock);
-            printk(KERN_DEBUG "ZQoS: Found UID %u corresponding tenant %d (via rq_uid)\n", 
-                   uid, tenant->tenant_id);
+            /* printk(KERN_DEBUG "ZQoS: Found UID %u corresponding tenant %d (via rq_uid)\n", 
+                   uid, tenant->tenant_id); */
             return tenant;
         }
     }

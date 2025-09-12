@@ -1530,166 +1530,186 @@ static void blk_mq_try_issue_directly(struct blk_mq_hw_ctx *hctx,
 		srcu_read_unlock(&hctx->queue_rq_srcu, srcu_idx);
 	}
 }
-
 static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
 {
-	const int is_sync = op_is_sync(bio->bi_opf);
-	const int is_flush_fua = op_is_flush(bio->bi_opf);
-	struct blk_mq_alloc_data data = { .flags = 0 };
-	struct request *rq;
-	unsigned int request_count = 0;
-	struct blk_plug *plug;
-	struct request *same_queue_rq = NULL;
-	blk_qc_t cookie;
-	unsigned int wb_acct;
-	
-	/* Debug: 基本 I/O 與 queue 狀態 */
-	pr_info("blk-mq: make_request q=%p bio=%p opf=0x%x is_sync=%d is_flush_fua=%d sector=%llu size=%u nr_hwq=%u\n",
-		q, bio, bio->bi_opf, is_sync, is_flush_fua,
-		(unsigned long long)bio->bi_iter.bi_sector,
-		bio->bi_iter.bi_size, q->nr_hw_queues);
+    const int is_sync = op_is_sync(bio->bi_opf);
+    const int is_flush_fua = op_is_flush(bio->bi_opf);
+    struct blk_mq_alloc_data data = { .flags = 0 };
+    struct request *rq;
+    unsigned int request_count = 0;
+    struct blk_plug *plug;
+    struct request *same_queue_rq = NULL;
+    blk_qc_t cookie;
+    unsigned int wb_acct;
 
-	/*
-	 * 路線 A：依 UID 選擇 hctx（硬體 I/O queue）。
-	 * 若有多條硬體佇列，將本次 bio 對應的 UID 做穩定映射到 hctx index。
-	 * 注意：若該 hctx 未映射或出錯，交回預設路徑讓核心自行決定。
-	 */
-	if (q->nr_hw_queues > 1) {
-		unsigned int nr = q->nr_hw_queues;
-		u32 uid32 = from_kuid(&init_user_ns, bio->bi_uid);
-		unsigned int hidx = uid32 % nr;
-		struct blk_mq_hw_ctx *sel = q->queue_hw_ctx[hidx];
+    /* for UID→hctx 規劃（但先不綁 ctx/hctx，避免早退漏配對） */
+    struct blk_mq_hw_ctx *sel = NULL;
+    unsigned int sel_cpu = UINT_MAX;
+    bool sel_valid = false;
 
-		pr_info("blk-mq: UID-hctx select uid=%u nr=%u hidx=%u sel=%p\n",
-			uid32, nr, hidx, sel);
-		if (sel && blk_mq_hw_queue_mapped(sel)) {
-			unsigned int cpu = cpumask_first(sel->cpumask);
-			pr_info("blk-mq: use hctx sel=%p qnum=%u first_cpu=%u\n",
-				sel, sel->queue_num, cpu);
-			data.hctx = sel;
-			data.ctx  = __blk_mq_get_ctx(q, cpu);
-		} else {
-			pr_info("blk-mq: hctx select fallback (sel=%p mapped=%d)\n",
-				sel, sel ? blk_mq_hw_queue_mapped(sel) : 0);
-		}
-	} else {
-		pr_info("blk-mq: single hw queue, skip UID routing\n");
-	}
+    /* Debug: 基本 I/O 與 queue 狀態 */
+    pr_info("blk-mq: make_request q=%p bio=%p opf=0x%x is_sync=%d is_flush_fua=%d sector=%llu size=%u nr_hwq=%u\n",
+        q, bio, bio->bi_opf, is_sync, is_flush_fua,
+        (unsigned long long)bio->bi_iter.bi_sector,
+        bio->bi_iter.bi_size, q->nr_hw_queues);
 
-	blk_queue_bounce(q, &bio);
+    /*
+     * 先只“規劃”要用哪條 hctx 與它的對應 cpu；真正綁定 ctx/hctx
+     * 放到所有可能早退的合併路徑之後。
+     */
+    if (q->nr_hw_queues > 1) {
+        unsigned int nr = q->nr_hw_queues;
+        u32 uid32 = from_kuid(&init_user_ns, bio->bi_uid);
+        unsigned int hidx = uid32 % nr;
 
-	blk_queue_split(q, &bio, q->bio_split);
+        sel = q->queue_hw_ctx[hidx];
+        pr_info("blk-mq: UID-hctx select uid=%u nr=%u hidx=%u sel=%p\n",
+                uid32, nr, hidx, sel);
 
-	if (bio_integrity_enabled(bio) && bio_integrity_prep(bio)) {
-		bio_io_error(bio);
-		return BLK_QC_T_NONE;
-	}
+        if (sel && blk_mq_hw_queue_mapped(sel)) {
+            unsigned int cpu = cpumask_first_and(sel->cpumask, cpu_online_mask);
+            if (cpu < nr_cpu_ids) {
+                sel_cpu = cpu;
+                sel_valid = true;
+                pr_info("blk-mq: plan use hctx sel=%p qnum=%u cpu=%u\n",
+                        sel, sel->queue_num, cpu);
+            } else {
+                pr_info("blk-mq: hctx select fallback (offline cpu)\n");
+            }
+        } else {
+            pr_info("blk-mq: hctx select fallback (sel=%p mapped=%d)\n",
+                    sel, sel ? blk_mq_hw_queue_mapped(sel) : 0);
+        }
+    } else {
+        pr_info("blk-mq: single hw queue, skip UID routing\n");
+    }
 
-	if (!is_flush_fua && !blk_queue_nomerges(q) &&
-	    blk_attempt_plug_merge(q, bio, &request_count, &same_queue_rq))
-		return BLK_QC_T_NONE;
+    /* 這些路徑可能早退，仍然不該持有 preempt_disable() */
+    blk_queue_bounce(q, &bio);
+    blk_queue_split(q, &bio, q->bio_split);
 
-	if (blk_mq_sched_bio_merge(q, bio))
-		return BLK_QC_T_NONE;
+    if (bio_integrity_enabled(bio) && bio_integrity_prep(bio)) {
+        bio_io_error(bio);
+        return BLK_QC_T_NONE;
+    }
 
-	wb_acct = wbt_wait(q->rq_wb, bio, NULL);
+    if (!is_flush_fua && !blk_queue_nomerges(q) &&
+        blk_attempt_plug_merge(q, bio, &request_count, &same_queue_rq))
+        return BLK_QC_T_NONE;
 
-	trace_block_getrq(q, bio, bio->bi_opf);
+    if (blk_mq_sched_bio_merge(q, bio))
+        return BLK_QC_T_NONE;
 
-	/* Debug：送入 scheduler 取 request 前的選擇狀態 */
-	pr_info("blk-mq: before get_request data.hctx=%p data.ctx=%p opf=0x%x\n",
-		data.hctx, data.ctx, bio->bi_opf);
+    wb_acct = wbt_wait(q->rq_wb, bio, NULL);
 
-	/* 若上面已指定 data.hctx / data.ctx，這裡會直接用；否則由核心自行決定。 */
-	rq = blk_mq_sched_get_request(q, bio, bio->bi_opf, &data);
-	if (unlikely(!rq)) {
-		pr_info("blk-mq: get_request FAILED q=%p bio=%p opf=0x%x\n",
-			q, bio, bio->bi_opf);
-		__wbt_done(q->rq_wb, wb_acct);
-		return BLK_QC_T_NONE;
-	}
+    trace_block_getrq(q, bio, bio->bi_opf);
 
-	wbt_track(&rq->issue_stat, wb_acct);
+    /*
+     * **現在**才實際綁定 ctx/hctx：
+     * 1) 如果 UID→hctx 規劃可用：preempt_disable() + __blk_mq_get_ctx(q, sel_cpu)
+     * 2) 否則走預設：blk_mq_get_ctx() + blk_mq_map_queue()
+     */
+    if (sel_valid) {
+        preempt_disable();                          /* 與後面的 blk_mq_put_ctx() 成對 */
+        data.ctx  = __blk_mq_get_ctx(q, sel_cpu);   /* 取得屬於這條 hctx 的 ctx */
+        data.hctx = sel;                            /* 指定目標 hctx */
+        WARN_ON_ONCE(!cpumask_test_cpu(data.ctx->cpu, data.hctx->cpumask));
+    } else {
+        data.ctx  = blk_mq_get_ctx(q);              /* 內含 get_cpu()：會關 preempt */
+        data.hctx = blk_mq_map_queue(q, data.ctx->cpu);
+    }
 
-	cookie = request_to_qc_t(data.hctx, rq);
+    /* Debug：送入 scheduler 取 request 前的選擇狀態 */
+    pr_info("blk-mq: before get_request data.hctx=%p data.ctx=%p opf=0x%x\n",
+            data.hctx, data.ctx, bio->bi_opf);
 
-	plug = current->plug;
-	if (unlikely(is_flush_fua)) {
-		blk_mq_put_ctx(data.ctx);
-		blk_mq_bio_to_request(rq, bio);
-		if (q->elevator) {
-			blk_mq_sched_insert_request(rq, false, true, true,
-					true);
-		} else {
-			blk_insert_flush(rq);
-			blk_mq_run_hw_queue(data.hctx, true);
-		}
-	} else if (plug && q->nr_hw_queues == 1) {
-		struct request *last = NULL;
+    /* （可選）更詳細的對應檢查 */
+    pr_debug("blk-mq: uid=%u -> hctx=%u (ctx_cpu=%u) mapped=%d\n",
+             from_kuid(&init_user_ns, bio->bi_uid),
+             data.hctx ? data.hctx->queue_num : ~0U,
+             data.ctx ? data.ctx->cpu : ~0U,
+             data.hctx ? blk_mq_hw_queue_mapped(data.hctx) : -1);
 
-		blk_mq_put_ctx(data.ctx);
-		blk_mq_bio_to_request(rq, bio);
+    /* 取 request */
+    rq = blk_mq_sched_get_request(q, bio, bio->bi_opf, &data);
+    if (unlikely(!rq)) {
+        pr_info("blk-mq: get_request FAILED q=%p bio=%p opf=0x%x\n",
+                q, bio, bio->bi_opf);
+        __wbt_done(q->rq_wb, wb_acct);
+        /* 我們此時已經持有 ctx（不論是 __blk_mq_get_ctx 或 blk_mq_get_ctx），必須釋放 */
+        if (data.ctx)
+            blk_mq_put_ctx(data.ctx);
+        return BLK_QC_T_NONE;
+    }
 
-		/*
-		 * @request_count may become stale because of schedule
-		 * out, so check the list again.
-		 */
-		if (list_empty(&plug->mq_list))
-			request_count = 0;
-		else if (blk_queue_nomerges(q))
-			request_count = blk_plug_queued_count(q);
+    wbt_track(&rq->issue_stat, wb_acct);
 
-		if (!request_count)
-			trace_block_plug(q);
-		else
-			last = list_entry_rq(plug->mq_list.prev);
+    cookie = request_to_qc_t(data.hctx, rq);
 
-		if (request_count >= BLK_MAX_REQUEST_COUNT || (last &&
-		    blk_rq_bytes(last) >= BLK_PLUG_FLUSH_SIZE)) {
-			blk_flush_plug_list(plug, false);
-			trace_block_plug(q);
-		}
+    plug = current->plug;
+    if (unlikely(is_flush_fua)) {
+        blk_mq_put_ctx(data.ctx);
+        blk_mq_bio_to_request(rq, bio);
+        if (q->elevator) {
+            blk_mq_sched_insert_request(rq, false, true, true, true);
+        } else {
+            blk_insert_flush(rq);
+            blk_mq_run_hw_queue(data.hctx, true);
+        }
+    } else if (plug && q->nr_hw_queues == 1) {
+        struct request *last = NULL;
 
-		list_add_tail(&rq->queuelist, &plug->mq_list);
-	} else if (plug && !blk_queue_nomerges(q)) {
-		blk_mq_bio_to_request(rq, bio);
+        blk_mq_put_ctx(data.ctx);
+        blk_mq_bio_to_request(rq, bio);
 
-		/*
-		 * We do limited plugging. If the bio can be merged, do that.
-		 * Otherwise the existing request in the plug list will be
-		 * issued. So the plug list will have one request at most
-		 * The plug list might get flushed before this. If that happens,
-		 * the plug list is empty, and same_queue_rq is invalid.
-		 */
-		if (list_empty(&plug->mq_list))
-			same_queue_rq = NULL;
-		if (same_queue_rq)
-			list_del_init(&same_queue_rq->queuelist);
-		list_add_tail(&rq->queuelist, &plug->mq_list);
+        if (list_empty(&plug->mq_list))
+            request_count = 0;
+        else if (blk_queue_nomerges(q))
+            request_count = blk_plug_queued_count(q);
 
-		blk_mq_put_ctx(data.ctx);
+        if (!request_count)
+            trace_block_plug(q);
+        else
+            last = list_entry_rq(plug->mq_list.prev);
 
-		if (same_queue_rq) {
-			data.hctx = blk_mq_map_queue(q,
-					same_queue_rq->mq_ctx->cpu);
-			blk_mq_try_issue_directly(data.hctx, same_queue_rq,
-					&cookie);
-		}
-	} else if (q->nr_hw_queues > 1 && is_sync) {
-		blk_mq_put_ctx(data.ctx);
-		blk_mq_bio_to_request(rq, bio);
-		blk_mq_try_issue_directly(data.hctx, rq, &cookie);
-	} else if (q->elevator) {
-		blk_mq_put_ctx(data.ctx);
-		blk_mq_bio_to_request(rq, bio);
-		blk_mq_sched_insert_request(rq, false, true, true, true);
-	} else if (!blk_mq_merge_queue_io(data.hctx, data.ctx, rq, bio)) {
-		blk_mq_put_ctx(data.ctx);
-		blk_mq_run_hw_queue(data.hctx, true);
-	} else
-		blk_mq_put_ctx(data.ctx);
+        if (request_count >= BLK_MAX_REQUEST_COUNT || (last &&
+            blk_rq_bytes(last) >= BLK_PLUG_FLUSH_SIZE)) {
+            blk_flush_plug_list(plug, false);
+            trace_block_plug(q);
+        }
 
-	return cookie;
+        list_add_tail(&rq->queuelist, &plug->mq_list);
+    } else if (plug && !blk_queue_nomerges(q)) {
+        blk_mq_bio_to_request(rq, bio);
+
+        if (list_empty(&plug->mq_list))
+            same_queue_rq = NULL;
+        if (same_queue_rq)
+            list_del_init(&same_queue_rq->queuelist);
+        list_add_tail(&rq->queuelist, &plug->mq_list);
+
+        blk_mq_put_ctx(data.ctx);
+
+        if (same_queue_rq) {
+            data.hctx = blk_mq_map_queue(q, same_queue_rq->mq_ctx->cpu);
+            blk_mq_try_issue_directly(data.hctx, same_queue_rq, &cookie);
+        }
+    } else if (q->nr_hw_queues > 1 && is_sync) {
+        blk_mq_put_ctx(data.ctx);
+        blk_mq_bio_to_request(rq, bio);
+        blk_mq_try_issue_directly(data.hctx, rq, &cookie);
+    } else if (q->elevator) {
+        blk_mq_put_ctx(data.ctx);
+        blk_mq_bio_to_request(rq, bio);
+        blk_mq_sched_insert_request(rq, false, true, true, true);
+    } else if (!blk_mq_merge_queue_io(data.hctx, data.ctx, rq, bio)) {
+        blk_mq_put_ctx(data.ctx);
+        blk_mq_run_hw_queue(data.hctx, true);
+    } else {
+        blk_mq_put_ctx(data.ctx);
+    }
+
+    return cookie;
 }
 
 void blk_mq_free_rqs(struct blk_mq_tag_set *set, struct blk_mq_tags *tags,
