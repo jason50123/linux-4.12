@@ -11,6 +11,8 @@
 #include <linux/init.h>
 #include <linux/ktime.h>
 #include <linux/zqos_scheduler.h>
+#include <linux/ctype.h>
+#include <linux/random.h>
 
 /* External variable declarations */
 extern struct zqos_arbiter *global_arbiter;
@@ -22,6 +24,53 @@ static struct zqos_tenant *zqos_find_tenant_by_bio(struct zqos_enforcer *enforce
                                                    struct bio *bio);
 static struct zqos_tenant *zqos_find_tenant_by_request(struct zqos_enforcer *enforcer,
                                                       struct request *rq);
+
+/* ---- LC UID white-list (module parameter) ---- */
+#define ZQOS_MAX_LC_UIDS 32
+static char lc_uids_str[128] = "";
+static uid_t lc_uids[ZQOS_MAX_LC_UIDS];
+static int lc_uid_count;
+module_param_string(lc_uids, lc_uids_str, sizeof(lc_uids_str), 0644);
+MODULE_PARM_DESC(lc_uids, "Comma-separated list of UIDs treated as LC (e.g., 1001,1002)");
+
+static void zqos_parse_lc_uids(void)
+{
+    char *p, *q, *end;
+    long v;
+    int n = 0;
+    static bool parsed_once;
+
+    if (parsed_once)
+        return;
+    parsed_once = true;
+
+    p = lc_uids_str;
+    while (p && *p && n < ZQOS_MAX_LC_UIDS) {
+        while (*p && (isspace(*p) || *p == ',')) p++;
+        if (!*p) break;
+        v = simple_strtol(p, &q, 10);
+        if (q == p) {
+            break; /* no progress */
+        }
+        if (v >= 0 && v <= 0xFFFFFFFF) {
+            lc_uids[n++] = (uid_t)v;
+        }
+        p = q;
+        if (*p == ',') p++;
+    }
+    lc_uid_count = n;
+}
+
+static bool zqos_is_lc_uid(uid_t uid)
+{
+    int i;
+    if (uid == 0)
+        return true; /* root default LC */
+    for (i = 0; i < lc_uid_count; i++)
+        if (lc_uids[i] == uid)
+            return true;
+    return false;
+}
 
 /* zQoS request data */
 struct zqos_request_data {
@@ -172,12 +221,14 @@ static void zqos_completed_request(struct request_queue *q, struct request *rq)
     struct zqos_request_data *rq_data = rq->elv.priv[0];
     ktime_t latency;
     uid_t rq_uid, tenant_uid;
+    u64 lat_us;
     
     if (!rq_data)
         return;
     
     /* Calculate latency */
     latency = ktime_sub(ktime_get(), rq_data->enqueue_time);
+    lat_us = ktime_to_us(latency);
     
     /* Update statistics */
     if (rq_data->tenant) {
@@ -195,9 +246,11 @@ static void zqos_completed_request(struct request_queue *q, struct request *rq)
         }
         
         if (tenant) {
-            /* Update IOPS and latency statistics */
-            tenant->iops_metric++;
-            tenant->tail_latency_metric = ktime_to_us(latency);
+            /* Update VIOPS (4KB pages) and latency statistics */
+            u32 pages = rq_data->io_size ? (rq_data->io_size >> 12) : 1;
+            if (!pages) pages = 1;
+            tenant->viops_metric += pages;
+            tenant->tail_latency_metric = (u32)lat_us;
             
             /* Add detailed accounting trace */
             /* printk(KERN_DEBUG "ZQoS: COMPLETE rq_uid=%u tenant_id=%d latency=%lld us\n",
@@ -205,9 +258,42 @@ static void zqos_completed_request(struct request_queue *q, struct request *rq)
         }
         
         /* Update device statistics */
-        enforcer->viops_metric++;
-        enforcer->tlat_metric = max(enforcer->tlat_metric, 
-                                   (u32)ktime_to_us(latency));
+        {
+            u32 pages = rq_data->io_size ? (rq_data->io_size >> 12) : 1;
+            if (!pages) pages = 1;
+            enforcer->viops_metric += pages;
+        }
+        
+        /* Update tail latency histogram (approx p99) */
+        {
+            u32 bucket;
+            if (lat_us >= ZQOS_TLAT_US_MAX)
+                bucket = ZQOS_TLAT_BUCKETS - 1;
+            else
+                bucket = (u32)((lat_us * ZQOS_TLAT_BUCKETS) / ZQOS_TLAT_US_MAX);
+            if (bucket >= ZQOS_TLAT_BUCKETS)
+                bucket = ZQOS_TLAT_BUCKETS - 1;
+            enforcer->tlat_hist[bucket]++;
+            enforcer->tlat_hist_total++;
+            /* compute approx p99 */
+            if (enforcer->tlat_hist_total >= 50) {
+                u64 target = (enforcer->tlat_hist_total * 99) / 100;
+                u64 acc = 0;
+                u32 b;
+                for (b = 0; b < ZQOS_TLAT_BUCKETS; b++) {
+                    acc += enforcer->tlat_hist[b];
+                    if (acc >= target) {
+                        /* upper bound of bucket as p99 estimate */
+                        u32 bound = (u32)(((u64)(b + 1) * ZQOS_TLAT_US_MAX) / ZQOS_TLAT_BUCKETS);
+                        enforcer->tlat_metric = bound;
+                        break;
+                    }
+                }
+            } else {
+                /* Fallback to latest value early on */
+                enforcer->tlat_metric = (u32)lat_us;
+            }
+        }
     }
     
     /* If write request, decrease concurrent write count */
@@ -398,6 +484,8 @@ static int zqos_init_sched(struct request_queue *q, struct elevator_type *e)
     INIT_LIST_HEAD(&enforcer->tenants);
     spin_lock_init(&enforcer->tenants_lock);
     INIT_WORK(&enforcer->adjustment_work, zqos_adjustment_work_fn);
+    memset(enforcer->tlat_hist, 0, sizeof(enforcer->tlat_hist));
+    enforcer->tlat_hist_total = 0;
     
     /* Set default values */
     enforcer->dev_viops = 10000; /* Default VIOPS */
@@ -419,6 +507,7 @@ static int zqos_init_sched(struct request_queue *q, struct elevator_type *e)
             default_tenant->viops_metric = 0;
             default_tenant->tokens = 1000;
             default_tenant->backup_tokens = 500;
+            default_tenant->backup_from = NULL;
             INIT_LIST_HEAD(&default_tenant->request_queue);
             spin_lock_init(&default_tenant->queue_lock);
             
@@ -489,6 +578,8 @@ int zqos_register_device(struct request_queue *q,
     INIT_LIST_HEAD(&enforcer->tenants);
     spin_lock_init(&enforcer->tenants_lock);
     INIT_WORK(&enforcer->adjustment_work, zqos_adjustment_work_fn);
+    memset(enforcer->tlat_hist, 0, sizeof(enforcer->tlat_hist));
+    enforcer->tlat_hist_total = 0;
     
     enforcer->model = model;
     enforcer->dev_viops = model->viops_tlat_curves[7][5].viops; /* Default value */
@@ -516,6 +607,7 @@ int zqos_register_device(struct request_queue *q,
             default_tenant->viops_metric = 0;
             default_tenant->tokens = 1000;
             default_tenant->backup_tokens = 500;
+            default_tenant->backup_from = NULL;
             INIT_LIST_HEAD(&default_tenant->request_queue);
             spin_lock_init(&default_tenant->queue_lock);
             
@@ -616,8 +708,8 @@ static struct zqos_tenant *zqos_find_tenant_by_request(struct zqos_enforcer *enf
         tenant->user_id = uid;
         
         /* Determine tenant type by UID */
-        if (uid == 0) {
-            tenant->type = TENANT_TYPE_LC;  /* root user has higher priority */
+        if (zqos_is_lc_uid(uid)) {
+            tenant->type = TENANT_TYPE_LC;  /* latency-critical */
             tenant->iops_slo = 15000;
             tenant->tail_latency_slo = 1000;  /* 1ms */
             tenant->viops = 8000;
@@ -682,6 +774,8 @@ static struct zqos_tenant *zqos_find_tenant_by_bio(struct zqos_enforcer *enforce
 static int __init zqos_blk_init(void)
 {
     int ret;
+    /* Parse LC UID white-list once at module load */
+    zqos_parse_lc_uids();
     
     ret = zqos_init();
     if (ret)

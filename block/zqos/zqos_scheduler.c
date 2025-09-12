@@ -5,6 +5,7 @@
 #include <linux/timer.h>
 #include <linux/workqueue.h>
 #include <linux/blkdev.h>
+#include <linux/random.h>
 #include <linux/zqos_scheduler.h>
 
 struct zqos_arbiter *global_arbiter;
@@ -61,7 +62,11 @@ void zqos_adjust_device_viops(struct zqos_enforcer *enforcer)
 {
     struct viops_tlat_point *curve;
     u64 new_viops = enforcer->dev_viops;
-    u32 usage_idx = enforcer->current_usage / 10 - 1;
+    int usage_idx = (int)enforcer->current_usage / 10 - 1;
+    if (usage_idx < 0)
+        usage_idx = 0;
+    if (usage_idx > 9)
+        usage_idx = 9;
     int i;
     
     /* Check if adjustment needed */
@@ -117,10 +122,11 @@ void zqos_allocate_viops_to_tenants(struct zqos_enforcer *enforcer)
     struct zqos_tenant *tenant;
     u64 remaining_viops = enforcer->dev_viops;
     u32 total_be_weight = 0;
+    u32 be_count = 0;
     
     spin_lock(&enforcer->tenants_lock);
     
-    /* First allocate to LC tenants */
+    /* First allocate to LC tenants and count BE tenants */
     list_for_each_entry(tenant, &enforcer->tenants, list) {
         if (tenant->type == TENANT_TYPE_LC) {
             /* Adjust based on load distribution */
@@ -129,6 +135,7 @@ void zqos_allocate_viops_to_tenants(struct zqos_enforcer *enforcer)
             remaining_viops -= tenant->viops;
         } else {
             total_be_weight += 1; /* Simplified: all BE tenants have equal weight */
+            be_count++;
         }
     }
     
@@ -139,6 +146,31 @@ void zqos_allocate_viops_to_tenants(struct zqos_enforcer *enforcer)
             if (tenant->type == TENANT_TYPE_BE) {
                 tenant->viops = viops_per_be;
             }
+        }
+    }
+    
+    /* Assign backup tokens source for each LC tenant: randomly select one BE */
+    list_for_each_entry(tenant, &enforcer->tenants, list) {
+        if (tenant->type != TENANT_TYPE_LC)
+            continue;
+        tenant->backup_from = NULL;
+        tenant->backup_tokens = 0;
+        if (be_count == 0)
+            continue;
+        /* choose a BE index */
+        u32 pick = prandom_u32() % be_count;
+        u32 idx = 0;
+        struct zqos_tenant *be;
+        list_for_each_entry(be, &enforcer->tenants, list) {
+            if (be->type != TENANT_TYPE_BE)
+                continue;
+            if (idx == pick) {
+                tenant->backup_from = be;
+                /* Snapshot at most half of BE tokens as backup potential */
+                tenant->backup_tokens = min((u32)(ZQOS_TOKEN_BUCKET_SIZE / 2), be->tokens / 2);
+                break;
+            }
+            idx++;
         }
     }
     
@@ -201,6 +233,13 @@ static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
                 u32 tokens_from_backup = tokens_needed - tenant->tokens;
                 tenant->backup_tokens -= tokens_from_backup;
                 tenant->tokens = 0;
+                /* Actually deduct from chosen BE tenant if available */
+                if (tenant->backup_from) {
+                    u32 take = tokens_from_backup;
+                    if (tenant->backup_from->tokens < take)
+                        take = tenant->backup_from->tokens;
+                    tenant->backup_from->tokens -= take;
+                }
                 list_del_init(&req->queuelist);
                 /* printk(KERN_DEBUG "ZQoS: LC_PREEMPT tenant_id=%d backup_used=%u\n",
                        tenant->tenant_id, tokens_from_backup); */

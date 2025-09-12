@@ -12,6 +12,10 @@
 #define ZQOS_INTERVAL_NUM 3              /* Number of historical records */
 #define ZQOS_TOKEN_BUCKET_SIZE 128       /* Token bucket size */
 
+/* Tail-latency histogram config (approx p99 computation) */
+#define ZQOS_TLAT_BUCKETS 64
+#define ZQOS_TLAT_US_MAX 1000000 /* 1 second upper bound */
+
 /* Tenant types */
 enum tenant_type {
     TENANT_TYPE_LC,  /* Latency-Critical */
@@ -39,6 +43,7 @@ struct zqos_tenant {
     /* Token bucket */
     u32 tokens;
     u32 backup_tokens;
+    struct zqos_tenant *backup_from; /* BE tenant chosen for backup tokens */
     
     /* Statistics */
     u64 iops_metric;
@@ -81,6 +86,10 @@ struct zqos_enforcer {
     u64 viops_metric;       /* Measured VIOPS */
     u32 tlat_metric;        /* Measured tail latency */
     u32 concurrent_writes;  /* Current concurrent writes */
+    
+    /* Tail latency histogram (for approx p99) */
+    u32 tlat_hist[ZQOS_TLAT_BUCKETS];
+    u64 tlat_hist_total;
     
     /* Historical records */
     u32 history_tlat[ZQOS_INTERVAL_NUM];
