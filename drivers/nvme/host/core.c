@@ -361,7 +361,9 @@ static inline void nvme_setup_rw(struct nvme_ns *ns, struct request *req,
 			control |= NVME_RW_PRINFO_PRCHK_GUARD |
 					NVME_RW_PRINFO_PRCHK_REF;
 			cmnd->rw.reftag = cpu_to_le32(
-					nvme_block_nr(ns, blk_rq_pos(req)));
+					nvme_block_nr(ns, blk_rq_pos(req)));		
+			// cmnd->rw.pi.reftag = cpu_to_le32(
+			// 		nvme_block_nr(ns, blk_rq_pos(req)));
 			break;
 		}
 		if (!blk_integrity_rq(req))
@@ -370,6 +372,16 @@ static inline void nvme_setup_rw(struct nvme_ns *ns, struct request *req,
 
 	cmnd->rw.control = cpu_to_le16(control);
 	cmnd->rw.dsmgmt = cpu_to_le32(dsmgmt);
+	
+	if (req->bio) {
+		/* 將uid轉成整數 (此處只存下 32 bits) */
+		u32 uid32  = (u32)from_kuid(&init_user_ns, req->bio->bi_uid);
+		/* prio 直接用 int => u32 取值即可 */
+		u32 prio32 = (u32)(req->bio->bi_prio);
+		u64 combined = ((u64)uid32 << 32) | prio32;
+		cmnd->rw.rsvd2 = cpu_to_le64(combined);
+
+	}
 }
 
 int nvme_setup_cmd(struct nvme_ns *ns, struct request *req,
@@ -807,7 +819,7 @@ static int nvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
 	c.rw.reftag = cpu_to_le32(io.reftag);
 	c.rw.apptag = cpu_to_le16(io.apptag);
 	c.rw.appmask = cpu_to_le16(io.appmask);
-
+	
 	return __nvme_submit_user_cmd(ns->queue, &c,
 			(void __user *)(uintptr_t)io.addr, length,
 			metadata, meta_len, io.slba, NULL, 0);

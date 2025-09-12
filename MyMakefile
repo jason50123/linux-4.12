@@ -1,0 +1,23 @@
+.PHONY: test sim
+
+test:
+	@echo "檢查 rootfs 是否已經掛載..."
+	@if mountpoint -q rootfs; then \
+		echo "rootfs 已經掛載，跳過 mount 步驟."; \
+	else \
+		echo "掛載 rootfs.img 到 rootfs..."; \
+		sudo mount rootfs.img rootfs; \
+	fi
+	@echo "編譯 kernel..."
+	$(MAKE) -j`nproc`
+	@echo "編譯 modules..."
+	$(MAKE) modules ARCH=x86_64
+	@echo "安裝 modules 到 rootfs..."
+	$(MAKE) modules_install INSTALL_MOD_PATH=`pwd`/rootfs ARCH=x86_64
+	@echo "開啟兩個 terminal 並執行 qemu.sh 與 debug-qemu.sh..."
+	gnome-terminal -- bash -c "./qemu.sh; exec bash" &
+	gnome-terminal -- bash -c "./debug-qemu.sh; exec bash" &
+
+sim:
+	@echo "複製 vmlinux 到目標目錄..."
+	cp vmlinux ../../SimpleSSD-FSA/FS/cp2m5/binaries/vm-4.12
