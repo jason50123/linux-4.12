@@ -20,7 +20,7 @@ extern struct workqueue_struct *zqos_wq;
 
 /* Forward declarations */
 static void zqos_adjustment_work_fn(struct work_struct *work);
-static struct zqos_tenant *__maybe_unused zqos_find_tenant_by_bio(struct zqos_enforcer *enforcer,
+static __maybe_unused struct zqos_tenant *zqos_find_tenant_by_bio(struct zqos_enforcer *enforcer,
                                                    struct bio *bio);
 static struct zqos_tenant *zqos_find_tenant_by_request(struct zqos_enforcer *enforcer,
                                                       struct request *rq);

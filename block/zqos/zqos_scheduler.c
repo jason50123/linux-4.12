@@ -156,6 +156,10 @@ void zqos_allocate_viops_to_tenants(struct zqos_enforcer *enforcer)
     
     /* Assign backup tokens source for each LC tenant: randomly select one BE */
     list_for_each_entry(tenant, &enforcer->tenants, list) {
+        u32 pick;
+        u32 idx;
+        struct zqos_tenant *be;
+
         if (tenant->type != TENANT_TYPE_LC)
             continue;
         tenant->backup_from = NULL;
@@ -163,10 +167,6 @@ void zqos_allocate_viops_to_tenants(struct zqos_enforcer *enforcer)
         if (be_count == 0)
             continue;
         /* choose a BE index */
-        u32 pick;
-        u32 idx;
-        struct zqos_tenant *be;
-
         pick = prandom_u32() % be_count;
         idx = 0;
         list_for_each_entry(be, &enforcer->tenants, list) {
