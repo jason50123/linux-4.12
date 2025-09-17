@@ -65,12 +65,14 @@ void zqos_adjust_device_viops(struct zqos_enforcer *enforcer)
 {
     struct viops_tlat_point *curve;
     u64 new_viops = enforcer->dev_viops;
-    int usage_idx = (int)enforcer->current_usage / 10 - 1;
+    int usage_idx;
+    int i;
+
+    usage_idx = (int)enforcer->current_usage / 10 - 1;
     if (usage_idx < 0)
         usage_idx = 0;
     if (usage_idx > 9)
         usage_idx = 9;
-    int i;
     
     /* Check if adjustment needed */
     if (enforcer->tlat_metric <= enforcer->model->viops_tlat_curves[usage_idx][0].tail_latency) {
@@ -161,9 +163,12 @@ void zqos_allocate_viops_to_tenants(struct zqos_enforcer *enforcer)
         if (be_count == 0)
             continue;
         /* choose a BE index */
-        u32 pick = prandom_u32() % be_count;
-        u32 idx = 0;
+        u32 pick;
+        u32 idx;
         struct zqos_tenant *be;
+
+        pick = prandom_u32() % be_count;
+        idx = 0;
         list_for_each_entry(be, &enforcer->tenants, list) {
             if (be->type != TENANT_TYPE_BE)
                 continue;
@@ -373,7 +378,7 @@ void zqos_stop_enforcer_runtime(struct zqos_enforcer *enforcer)
  * Periodic adjustment work function that performs device VIOPS adjustment,
  * VIOPS allocation, and request scheduling.
  */
-static void zqos_adjustment_work_fn(struct work_struct *work)
+static void __maybe_unused zqos_adjustment_work_fn(struct work_struct *work)
 {
     struct zqos_enforcer *enforcer = 
         container_of(work, struct zqos_enforcer, adjustment_work);

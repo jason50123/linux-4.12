@@ -20,7 +20,7 @@ extern struct workqueue_struct *zqos_wq;
 
 /* Forward declarations */
 static void zqos_adjustment_work_fn(struct work_struct *work);
-static struct zqos_tenant *zqos_find_tenant_by_bio(struct zqos_enforcer *enforcer,
+static struct zqos_tenant *__maybe_unused zqos_find_tenant_by_bio(struct zqos_enforcer *enforcer,
                                                    struct bio *bio);
 static struct zqos_tenant *zqos_find_tenant_by_request(struct zqos_enforcer *enforcer,
                                                       struct request *rq);
@@ -35,7 +35,7 @@ MODULE_PARM_DESC(lc_uids, "Comma-separated list of UIDs treated as LC (e.g., 100
 
 static void zqos_parse_lc_uids(void)
 {
-    char *p, *q, *end;
+    char *p, *q;
     long v;
     int n = 0;
     static bool parsed_once;
@@ -106,7 +106,7 @@ static void zqos_init_request(struct request_queue *q, struct request *rq)
  *
  * Simplified implementation: removes next request from queue.
  */
-static void zqos_merged_requests(struct request_queue *q, struct request *rq, 
+static void __maybe_unused zqos_merged_requests(struct request_queue *q, struct request *rq, 
                                 struct request *next)
 {
     /* Simplified implementation: only remove next request */
@@ -122,7 +122,7 @@ static void zqos_merged_requests(struct request_queue *q, struct request *rq,
  *
  * Return: 1 if request dispatched, 0 otherwise
  */
-static int zqos_dispatch(struct request_queue *q, int force)
+static int __maybe_unused zqos_dispatch(struct request_queue *q, int force)
 {
     struct zqos_enforcer *enforcer = q->queuedata;
     struct zqos_tenant *tenant;
@@ -161,7 +161,7 @@ static int zqos_dispatch(struct request_queue *q, int force)
  * Adds request to appropriate tenant queue based on UID tracking.
  * Initializes request data and performs tenant lookup.
  */
-static void zqos_add_request(struct request_queue *q, struct request *rq)
+static void __maybe_unused zqos_add_request(struct request_queue *q, struct request *rq)
 {
     struct zqos_enforcer *enforcer = q->queuedata;
     struct zqos_request_data *rq_data;
@@ -215,7 +215,7 @@ static void zqos_add_request(struct request_queue *q, struct request *rq)
  * Updates tenant and device statistics, performs UID verification
  * for accurate accounting. Calculates latency and updates metrics.
  */
-static void zqos_completed_request(struct request_queue *q, struct request *rq)
+static void __maybe_unused zqos_completed_request(struct request_queue *q, struct request *rq)
 {
     struct zqos_enforcer *enforcer = q->queuedata;
     struct zqos_request_data *rq_data = rq->elv.priv[0];
