@@ -12,6 +12,11 @@
 #define ZQOS_INTERVAL_NUM 3              /* Number of historical records */
 #define ZQOS_TOKEN_BUCKET_SIZE 128       /* Token bucket size */
 
+/* Fast scheduling loop parameters (approximate the paper's high-frequency loop) */
+#define ZQOS_SCHED_SLICE_US 1000         /* Scheduling slice interval (microseconds) */
+#define ZQOS_MAX_DISPATCH_PER_SLICE 64   /* Max requests dispatched per slice */
+#define ZQOS_MAX_TOKEN_TIMESPAN_NS (50ULL * NSEC_PER_MSEC)
+
 /* Tail-latency histogram config (approx p99 computation) */
 #define ZQOS_TLAT_BUCKETS 64
 #define ZQOS_TLAT_US_MAX 1000000 /* 1 second upper bound */
@@ -44,6 +49,7 @@ struct zqos_tenant {
     u32 tokens;
     u32 backup_tokens;
     struct zqos_tenant *backup_from; /* BE tenant chosen for backup tokens */
+    u64 token_residual_ns;           /* Fractional token accumulator */
     
     /* Statistics */
     u64 iops_metric;
@@ -100,6 +106,9 @@ struct zqos_enforcer {
     
     /* Work queue */
     struct work_struct adjustment_work;
+    struct delayed_work sched_work;
+    ktime_t last_sched_time;
+    bool sched_active;
 };
 
 /* Global arbiter */
@@ -132,6 +141,9 @@ void zqos_allocate_viops(struct zqos_enforcer *enforcer);
 int zqos_submit_request(struct zqos_enforcer *enforcer, 
                        struct zqos_tenant *tenant,
                        struct request *req);
+
+void zqos_init_enforcer_runtime(struct zqos_enforcer *enforcer);
+void zqos_stop_enforcer_runtime(struct zqos_enforcer *enforcer);
 
 /* Performance model */
 u64 zqos_normalize_iops_to_viops(struct zqos_device_model *model,

@@ -6,6 +6,9 @@
 #include <linux/workqueue.h>
 #include <linux/blkdev.h>
 #include <linux/random.h>
+#include <linux/timekeeping.h>
+#include <linux/jiffies.h>
+#include <linux/math64.h>
 #include <linux/zqos_scheduler.h>
 
 struct zqos_arbiter *global_arbiter;
@@ -180,35 +183,51 @@ void zqos_allocate_viops_to_tenants(struct zqos_enforcer *enforcer)
 /**
  * zqos_schedule_requests - Schedule requests using token bucket
  * @enforcer: zQoS enforcer
+ * @delta_ns: time elapsed since last slice (nanoseconds)
+ * @dispatch_budget: maximum number of requests to dispatch in this slice
  *
  * Schedules requests based on token bucket algorithm.
  * LC tenants get priority and can preempt BE tokens.
  */
-static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
+static void zqos_schedule_requests(struct zqos_enforcer *enforcer,
+                                   u64 delta_ns,
+                                   u32 dispatch_budget)
 {
     struct zqos_tenant *tenant;
     struct request *req;
     u32 tokens_needed;
-    
+
     spin_lock(&enforcer->tenants_lock);
-    
-    /* Generate tokens */
-    list_for_each_entry(tenant, &enforcer->tenants, list) {
-        u32 new_tokens = tenant->viops * ZQOS_ADJUSTMENT_INTERVAL_MS / 1000;
-        tenant->tokens = min((u32)(tenant->tokens + new_tokens), (u32)ZQOS_TOKEN_BUCKET_SIZE);
+
+    if (delta_ns) {
+        if (delta_ns > ZQOS_MAX_TOKEN_TIMESPAN_NS)
+            delta_ns = ZQOS_MAX_TOKEN_TIMESPAN_NS;
+
+        list_for_each_entry(tenant, &enforcer->tenants, list) {
+            u64 generated = tenant->viops * delta_ns + tenant->token_residual_ns;
+            u32 new_tokens = div64_u64(generated, NSEC_PER_SEC);
+
+            tenant->token_residual_ns = generated - (u64)new_tokens * NSEC_PER_SEC;
+            if (new_tokens) {
+                u32 updated = tenant->tokens + new_tokens;
+                if (updated > ZQOS_TOKEN_BUCKET_SIZE)
+                    updated = ZQOS_TOKEN_BUCKET_SIZE;
+                tenant->tokens = updated;
+            }
+        }
     }
-    
-    /* Schedule LC tenant requests first */
+
     list_for_each_entry(tenant, &enforcer->tenants, list) {
+        if (!dispatch_budget)
+            break;
         if (tenant->type != TENANT_TYPE_LC)
             continue;
-            
+
         spin_lock(&tenant->queue_lock);
-        while (!list_empty(&tenant->request_queue)) {
+        while (dispatch_budget && !list_empty(&tenant->request_queue)) {
             req = list_first_entry(&tenant->request_queue, struct request, queuelist);
             tokens_needed = blk_rq_bytes(req) / 4096; /* Simplified: 4KB units */
-            
-            /* Verify request belongs to correct tenant */
+
             if (uid_valid(req->rq_uid)) {
                 uid_t req_uid = from_kuid_munged(&init_user_ns, req->rq_uid);
                 if (req_uid != tenant->user_id) {
@@ -218,22 +237,20 @@ static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
                     continue; /* Skip this mismatched request */
                 }
             }
-            
+
             if (tenant->tokens >= tokens_needed) {
                 tenant->tokens -= tokens_needed;
                 list_del_init(&req->queuelist);
-                /* Add scheduling trace */
-                /* printk(KERN_DEBUG "ZQoS: LC_DISPATCH tenant_id=%d tokens_used=%u remaining=%u\n",
-                       tenant->tenant_id, tokens_needed, tenant->tokens); */
-                /* Submit request to actual device */
                 blk_execute_rq_nowait(req->q, NULL, req, 1, NULL);
-            } else if (tenant->preemptive && 
-                      (tenant->tokens + tenant->backup_tokens) >= tokens_needed) {
-                /* Use backup tokens */
+                dispatch_budget--;
+                continue;
+            }
+
+            if (tenant->preemptive &&
+                (tenant->tokens + tenant->backup_tokens) >= tokens_needed) {
                 u32 tokens_from_backup = tokens_needed - tenant->tokens;
                 tenant->backup_tokens -= tokens_from_backup;
                 tenant->tokens = 0;
-                /* Actually deduct from chosen BE tenant if available */
                 if (tenant->backup_from) {
                     u32 take = tokens_from_backup;
                     if (tenant->backup_from->tokens < take)
@@ -241,28 +258,30 @@ static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
                     tenant->backup_from->tokens -= take;
                 }
                 list_del_init(&req->queuelist);
-                /* printk(KERN_DEBUG "ZQoS: LC_PREEMPT tenant_id=%d backup_used=%u\n",
-                       tenant->tenant_id, tokens_from_backup); */
                 blk_execute_rq_nowait(req->q, NULL, req, 1, NULL);
-            } else {
-                break; /* Insufficient tokens */
+                dispatch_budget--;
+                continue;
             }
+
+            break; /* Insufficient tokens */
         }
         spin_unlock(&tenant->queue_lock);
+        if (!dispatch_budget)
+            goto out_unlock;
     }
-    
-    /* Schedule BE tenant requests */
+
     list_for_each_entry(tenant, &enforcer->tenants, list) {
+        if (!dispatch_budget)
+            break;
         if (tenant->type != TENANT_TYPE_BE)
             continue;
-            
+
         spin_lock(&tenant->queue_lock);
-        while (!list_empty(&tenant->request_queue) &&
+        while (dispatch_budget && !list_empty(&tenant->request_queue) &&
                enforcer->concurrent_writes < enforcer->model->optimal_concurrent_writes[0]) {
             req = list_first_entry(&tenant->request_queue, struct request, queuelist);
             tokens_needed = blk_rq_bytes(req) / 4096;
-            
-            /* Verify request belongs to correct tenant */
+
             if (uid_valid(req->rq_uid)) {
                 uid_t req_uid = from_kuid_munged(&init_user_ns, req->rq_uid);
                 if (req_uid != tenant->user_id) {
@@ -272,29 +291,79 @@ static void zqos_schedule_requests(struct zqos_enforcer *enforcer)
                     continue; /* Skip this mismatched request */
                 }
             }
-            
-            if (tenant->tokens >= tokens_needed) {
-                tenant->tokens -= tokens_needed;
-                list_del_init(&req->queuelist);
-                
-                /* Track concurrent writes */
-                if (req_op(req) == REQ_OP_WRITE) {
-                    enforcer->concurrent_writes++;
-                }
-                
-                /* Add BE scheduling trace */
-                /* printk(KERN_DEBUG "ZQoS: BE_DISPATCH tenant_id=%d tokens_used=%u remaining=%u\n",
-                       tenant->tenant_id, tokens_needed, tenant->tokens); */
-                
-                blk_execute_rq_nowait(req->q, NULL, req, 1, NULL);
-            } else {
+
+            if (tenant->tokens < tokens_needed)
                 break;
-            }
+
+            tenant->tokens -= tokens_needed;
+            list_del_init(&req->queuelist);
+
+            if (req_op(req) == REQ_OP_WRITE)
+                enforcer->concurrent_writes++;
+
+            blk_execute_rq_nowait(req->q, NULL, req, 1, NULL);
+            dispatch_budget--;
         }
         spin_unlock(&tenant->queue_lock);
     }
-    
+
+out_unlock:
     spin_unlock(&enforcer->tenants_lock);
+}
+
+
+static unsigned long zqos_sched_delay_jiffies(void)
+{
+    unsigned long delay = usecs_to_jiffies(ZQOS_SCHED_SLICE_US);
+
+    return delay ? delay : 1;
+}
+
+static void zqos_sched_slice_work(struct work_struct *work)
+{
+    struct zqos_enforcer *enforcer =
+        container_of(work, struct zqos_enforcer, sched_work.work);
+    ktime_t now;
+    u64 delta_ns;
+
+    if (!enforcer->sched_active)
+        return;
+
+    now = ktime_get();
+    if (enforcer->last_sched_time)
+        delta_ns = ktime_to_ns(ktime_sub(now, enforcer->last_sched_time));
+    else
+        delta_ns = (u64)ZQOS_SCHED_SLICE_US * NSEC_PER_USEC;
+
+    enforcer->last_sched_time = now;
+
+    zqos_schedule_requests(enforcer, delta_ns, ZQOS_MAX_DISPATCH_PER_SLICE);
+
+    if (enforcer->sched_active)
+        queue_delayed_work(zqos_wq, &enforcer->sched_work,
+                           zqos_sched_delay_jiffies());
+}
+
+void zqos_init_enforcer_runtime(struct zqos_enforcer *enforcer)
+{
+    if (!enforcer || enforcer->sched_active)
+        return;
+
+    INIT_DELAYED_WORK(&enforcer->sched_work, zqos_sched_slice_work);
+    enforcer->last_sched_time = ktime_get();
+    enforcer->sched_active = true;
+
+    queue_delayed_work(zqos_wq, &enforcer->sched_work, 0);
+}
+
+void zqos_stop_enforcer_runtime(struct zqos_enforcer *enforcer)
+{
+    if (!enforcer || !enforcer->sched_active)
+        return;
+
+    enforcer->sched_active = false;
+    cancel_delayed_work_sync(&enforcer->sched_work);
+    enforcer->last_sched_time = 0;
 }
 
 /**
@@ -316,7 +385,7 @@ static void zqos_adjustment_work_fn(struct work_struct *work)
     zqos_allocate_viops_to_tenants(enforcer);
     
     /* Schedule requests */
-    zqos_schedule_requests(enforcer);
+    zqos_schedule_requests(enforcer, 0, ZQOS_MAX_DISPATCH_PER_SLICE);
     
     /* Update history */
     memmove(&enforcer->history_tlat[1], &enforcer->history_tlat[0],

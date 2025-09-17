@@ -486,6 +486,8 @@ static int zqos_init_sched(struct request_queue *q, struct elevator_type *e)
     INIT_WORK(&enforcer->adjustment_work, zqos_adjustment_work_fn);
     memset(enforcer->tlat_hist, 0, sizeof(enforcer->tlat_hist));
     enforcer->tlat_hist_total = 0;
+    enforcer->sched_active = false;
+    enforcer->last_sched_time = 0;
     
     /* Set default values */
     enforcer->dev_viops = 10000; /* Default VIOPS */
@@ -508,6 +510,7 @@ static int zqos_init_sched(struct request_queue *q, struct elevator_type *e)
             default_tenant->tokens = 1000;
             default_tenant->backup_tokens = 500;
             default_tenant->backup_from = NULL;
+            default_tenant->token_residual_ns = 0;
             INIT_LIST_HEAD(&default_tenant->request_queue);
             spin_lock_init(&default_tenant->queue_lock);
             
@@ -535,6 +538,7 @@ static void zqos_exit_sched(struct elevator_queue *eq)
     struct zqos_enforcer *enforcer = eq->elevator_data;
     
     if (enforcer) {
+        zqos_stop_enforcer_runtime(enforcer);
         cancel_work_sync(&enforcer->adjustment_work);
         kfree(enforcer);
     }
@@ -580,6 +584,8 @@ int zqos_register_device(struct request_queue *q,
     INIT_WORK(&enforcer->adjustment_work, zqos_adjustment_work_fn);
     memset(enforcer->tlat_hist, 0, sizeof(enforcer->tlat_hist));
     enforcer->tlat_hist_total = 0;
+    enforcer->sched_active = false;
+    enforcer->last_sched_time = 0;
     
     enforcer->model = model;
     enforcer->dev_viops = model->viops_tlat_curves[7][5].viops; /* Default value */
@@ -608,6 +614,7 @@ int zqos_register_device(struct request_queue *q,
             default_tenant->tokens = 1000;
             default_tenant->backup_tokens = 500;
             default_tenant->backup_from = NULL;
+            default_tenant->token_residual_ns = 0;
             INIT_LIST_HEAD(&default_tenant->request_queue);
             spin_lock_init(&default_tenant->queue_lock);
             
@@ -627,6 +634,8 @@ int zqos_register_device(struct request_queue *q,
     write_lock(&global_arbiter->enforcers_lock);
     list_add(&enforcer->list, &global_arbiter->enforcers);
     write_unlock(&global_arbiter->enforcers_lock);
+
+    zqos_init_enforcer_runtime(enforcer);
     
     return 0;
 }
@@ -724,6 +733,7 @@ static struct zqos_tenant *zqos_find_tenant_by_request(struct zqos_enforcer *enf
         tenant->viops_metric = 0;
         tenant->tokens = 1000;
         tenant->backup_tokens = 500;
+        tenant->token_residual_ns = 0;
         INIT_LIST_HEAD(&tenant->request_queue);
         spin_lock_init(&tenant->queue_lock);
         
